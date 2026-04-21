@@ -1,115 +1,265 @@
 import csv
 
-def parse_query(query):
-    tokens = query.replace(",", " ,").split()
+# ---------------- SAFE NUMBER ----------------
+def safe_number(val):
+    try:
+        return int(str(val).strip())
+    except:
+        try:
+            return float(str(val).strip())
+        except:
+            return 0
 
-    # Convert only keywords to uppercase
+
+# ---------------- TOKENIZER ----------------
+def tokenize(query):
+    for op in [">=", "<=", ">", "<", "="]:
+        query = query.replace(op, f" {op} ")
+    return query.replace(",", " ,").replace("(", " ( ").replace(")", " ) ").split()
+
+
+# ---------------- PARSER ----------------
+def parse_query(query):
+    tokens = tokenize(query)
     tokens_upper = [t.upper() for t in tokens]
 
-    # Find positions
-    select_index = tokens_upper.index("SELECT")
-    from_index = tokens_upper.index("FROM")
+    query_type = tokens_upper[0]
 
-    # Extract columns
-    columns = tokens[select_index + 1:from_index]
-    columns = [col for col in columns if col != ","]
+    if query_type == "SELECT":
+        select_index = tokens_upper.index("SELECT")
+        from_index = tokens_upper.index("FROM")
 
-    # Normalize column names
-    columns = [col.lower() for col in columns]
+        # Clean columns
+        columns = tokens[select_index + 1:from_index]
+        clean_columns = []
+        for col in columns:
+            if col != ",":
+                clean_columns.append(col.replace(",", "").strip().lower())
+        columns = clean_columns
 
-    # Extract table name
-    table = tokens[from_index + 1].lower()
+        table = tokens[from_index + 1].lower()
 
-    # Extract condition
-    condition = None
-    if "WHERE" in tokens_upper:
-        where_index = tokens_upper.index("WHERE")
+        condition = None
+        order_by = None
+        order_type = "ASC"
+        limit = None
+        group_by = None
 
-        col = tokens[where_index + 1].lower()
-        op = tokens[where_index + 2]
-        val = tokens[where_index + 3]
+        if "WHERE" in tokens_upper:
+            i = tokens_upper.index("WHERE")
+            condition = (tokens[i+1].lower(), tokens[i+2], tokens[i+3])
 
-        if val.isdigit():
-            val = int(val)
+        if "GROUP" in tokens_upper:
+            i = tokens_upper.index("BY")
+            group_by = tokens[i+1].lower()
 
-        condition = (col, op, val)
+        if "ORDER" in tokens_upper:
+            i = tokens_upper.index("BY")
+            order_by = tokens[i+1].lower()
 
-    return columns, table, condition
+            if len(tokens_upper) > i+2 and tokens_upper[i+2] in ["ASC", "DESC"]:
+                order_type = tokens_upper[i+2]
+
+        if "LIMIT" in tokens_upper:
+            i = tokens_upper.index("LIMIT")
+            limit = int(tokens[i+1])
+
+        return ("SELECT", columns, table, condition, order_by, order_type, limit, group_by)
+
+    elif query_type == "INSERT":
+        table = tokens[2].lower()
+        values_part = query.split("VALUES")[1].strip()
+        values_part = values_part.strip("()")
+        values = [v.strip() for v in values_part.split(",")]
+        return ("INSERT", table, values)
+
+    elif query_type == "DELETE":
+        table = tokens[2].lower()
+        condition = None
+        if "WHERE" in tokens_upper:
+            i = tokens_upper.index("WHERE")
+            condition = (tokens[i+1].lower(), tokens[i+2], tokens[i+3])
+        return ("DELETE", table, condition)
+
+    elif query_type == "UPDATE":
+        table = tokens[1].lower()
+        set_i = tokens_upper.index("SET")
+        where_i = tokens_upper.index("WHERE")
+
+        set_col = tokens[set_i+1].lower()
+        set_val = tokens[set_i+3]
+
+        condition = (tokens[where_i+1].lower(), tokens[where_i+2], tokens[where_i+3])
+        return ("UPDATE", table, set_col, set_val, condition)
 
 
+# ---------------- CONDITION ----------------
 def check_condition(row, condition):
     if not condition:
         return True
 
     col, op, val = condition
-
-    if col not in row:
-        print(f"❌ Column '{col}' not found")
-        return False
-
     row_val = row[col]
-
 
     try:
         row_val = int(row_val)
-    except:
-        try:
-            row_val = float(row_val)
-        except:
-            pass
-
-    try:
         val = int(val)
     except:
-        try:
-            val = float(val)
-        except:
-            pass
+        pass
 
-    if op == ">":
-        return row_val > val
-    elif op == "<":
-        return row_val < val
-    elif op == ">=":
-        return row_val >= val
-    elif op == "<=":
-        return row_val <= val
-    elif op == "==" or op == "=":
-        return row_val == val
+    if op == ">": return row_val > val
+    if op == "<": return row_val < val
+    if op == ">=": return row_val >= val
+    if op == "<=": return row_val <= val
+    if op in ["=", "=="]: return row_val == val
 
-    print("❌ Invalid operator")
     return False
 
 
-def execute_query(columns, table, condition):
+# ---------------- UTIL ----------------
+def get_next_id(filename):
+    max_id = 0
+    with open(filename, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            max_id = max(max_id, int(row["id"]))
+    return max_id + 1
+
+
+# ---------------- SELECT ----------------
+def execute_select(columns, table, condition, order_by, order_type, limit, group_by):
     filename = table + ".csv"
 
-    try:
-        with open(filename, newline='') as file:
-            reader = csv.DictReader(file)
+    with open(filename, newline='') as f:
+        reader = csv.DictReader(f)
+        rows = []
 
-            # Normalize CSV headers to lowercase
-            fieldnames = [field.lower() for field in reader.fieldnames]
+        for row in reader:
+            row = {k.lower(): v.strip().replace(",", "") for k, v in row.items()}
+            if check_condition(row, condition):
+                rows.append(row)
 
-            for row in reader:
-                # Convert row keys to lowercase
-                row = {k.lower(): v for k, v in row.items()}
+        # -------- GROUP BY --------
+        if group_by:
+            grouped = {}
 
-                if check_condition(row, condition):
-                    if columns == ["*"]:
-                        print(row)
-                    else:
-                        try:
-                            print({col: row[col] for col in columns})
-                        except KeyError as e:
-                            print(f"❌ Column not found: {e}")
+            for row in rows:
+                key = row[group_by]
 
-    except FileNotFoundError:
-        print(f"❌ Table '{table}' not found (missing {filename})")
+                if key not in grouped:
+                    grouped[key] = 0
+
+                grouped[key] += 1
+
+            new_rows = []
+            for key, count in grouped.items():
+                new_rows.append({group_by: key, "count": count})
+
+            rows = new_rows
+
+        # -------- ORDER BY --------
+        if order_by:
+            reverse = True if order_type == "DESC" else False
+            rows.sort(key=lambda x: safe_number(x.get(order_by, 0)), reverse=reverse)
+
+        # -------- LIMIT --------
+        if limit:
+            rows = rows[:limit]
+
+        # -------- PRINT --------
+        for row in rows:
+            if columns == ["*"]:
+                print(row)
+            else:
+                print({c: row.get(c, "NULL") for c in columns})
 
 
-# MAIN
+# ---------------- INSERT ----------------
+def execute_insert(table, values):
+    filename = table + ".csv"
+
+    next_id = get_next_id(filename)
+    print(f"👉 Suggested ID: {next_id}")
+
+    with open(filename, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["id"] == values[0]:
+                print("❌ Duplicate ID!")
+                return
+
+    clean_values = [v.replace(",", "").strip() for v in values]
+
+    with open(filename, "a", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(clean_values)
+
+    print("✅ Inserted successfully")
+
+
+# ---------------- DELETE ----------------
+def execute_delete(table, condition):
+    filename = table + ".csv"
+    rows = []
+
+    with open(filename, newline='') as f:
+        reader = csv.DictReader(f)
+        fields = reader.fieldnames
+
+        for row in reader:
+            row = {k.lower(): v for k, v in row.items()}
+            if not check_condition(row, condition):
+                rows.append(row)
+
+    with open(filename, "w", newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print("✅ Deleted")
+
+
+# ---------------- UPDATE ----------------
+def execute_update(table, set_col, set_val, condition):
+    filename = table + ".csv"
+    rows = []
+
+    with open(filename, newline='') as f:
+        reader = csv.DictReader(f)
+        fields = reader.fieldnames
+
+        for row in reader:
+            row = {k.lower(): v for k, v in row.items()}
+            if check_condition(row, condition):
+                row[set_col] = set_val
+            rows.append(row)
+
+    with open(filename, "w", newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print("✅ Updated")
+
+
+# ---------------- MAIN ----------------
 query = input("Enter SQL Query: ")
 
-columns, table, condition = parse_query(query)
-execute_query(columns, table, condition)
+parsed = parse_query(query)
+
+if parsed:
+    if parsed[0] == "SELECT":
+        _, cols, table, cond, order, order_type, limit, group_by = parsed
+        execute_select(cols, table, cond, order, order_type, limit, group_by)
+
+    elif parsed[0] == "INSERT":
+        _, table, values = parsed
+        execute_insert(table, values)
+
+    elif parsed[0] == "DELETE":
+        _, table, cond = parsed
+        execute_delete(table, cond)
+
+    elif parsed[0] == "UPDATE":
+        _, table, sc, sv, cond = parsed
+        execute_update(table, sc, sv, cond)
