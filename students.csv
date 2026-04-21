@@ -1,5 +1,5 @@
 id,name,age,marks
-1,Skanda,20,60
+1,Skanda,20,95
 2,Bhavya,20,95
 3,Ashay,21,90
 4,Ishuu,22,89
@@ -7,3 +7,5 @@ id,name,age,marks
 6,",Raj",",25",",95"
 7,",tej",",22",",69"
 8,Baby,20,98
+9,Harsh,21,88
+10,Ram,21,90
